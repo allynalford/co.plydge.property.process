@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	_bcpa Bcpa
-	_url  string
+	_bcpa    Bcpa
+	_baseURL string = "http://www.bcpa.net/"
 )
 
 // Bcpa table contains the information for each user
@@ -40,6 +40,7 @@ type Bcpa struct {
 type RecBuildingCard struct {
 	CardURL                   string `json:"cardurl"`
 	TaxYear                   string `json:"taxyear"`
+	Folio                     string `json:"folio"`
 	ParcelIDNumber            string `json:"parcelidnumber"`
 	UseCode                   string `json:"usecode"`
 	NoBedrooms                string `json:"nobedrooms"`
@@ -95,7 +96,7 @@ type LandCalculation struct {
 	Type   string `json:"type"`
 }
 
-// SpecialAssessment
+// SpecialAssessment data
 type SpecialAssessment struct {
 	Fire  string `json:"fire"`
 	Garb  string `json:"garb"`
@@ -171,36 +172,10 @@ type Sale struct {
 	BookPageCIN string `json:"bookpagecin"`
 }
 
-// ParseRecord table contains the information for each user
-func ParseRecord(s *goquery.Selection) PropertyAssessmentValue {
-	p := PropertyAssessmentValue{}
-
-	// Loop through each cell
-	s.Find("td").Each(func(int int, s *goquery.Selection) {
-
-		switch int {
-		case 0:
-			p.Year = strings.TrimSpace(s.Find("span").First().Contents().Text())
-		case 1:
-			p.Land = strings.TrimSpace(s.Find("span").First().Contents().Text())
-		case 2:
-			p.BuildingImprovement = strings.TrimSpace(s.Find("span").First().Contents().Text())
-		case 3:
-			p.JustMarketValue = strings.TrimSpace(s.Find("span").First().Contents().Text())
-		case 4:
-			p.AssessedSOHValue = strings.TrimSpace(s.Find("span").First().Contents().Text())
-		case 5:
-			p.Tax = strings.TrimSpace(s.Find("span").First().Contents().Text())
-		}
-	})
-
-	return p
-}
-
 func main() {
 	// Create a new browser and open reddit.
 	bow := surf.NewBrowser()
-	err := bow.Open("http://www.bcpa.net/RecAddr.asp")
+	err := bow.Open(_baseURL + "RecAddr.asp")
 	if err != nil {
 		panic(err)
 	}
@@ -230,42 +205,50 @@ func main() {
 	}
 
 	//Load the BCPA parent node from the HTML receieved from URL
-	_bcpa, err = LoadBcpaFromDoc(doc.Html())
+	_bcpa = LoadBcpaFromDoc(doc)
 
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	//doc.Html().string
 	//Load the class level BCPA object with with assessments
-	err = LoadAppendPropertyAssessments(doc.Html())
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	LoadAppendPropertyAssessments(doc)
 
 	//load exemptions
-	err = LoadAppendExemptionsTaxable(doc.Html())
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	LoadAppendExemptionsTaxable(doc)
 
 	//Load Sales History
-	err = LoadSalesHistory(doc.Html())
+	LoadSalesHistory(doc)
 
-	if err != nil {
-		log.Fatal(err)
+	//Load the Land Calculations
+	LoadLandCalculations(doc)
+
+	//Load the Special Assessments
+	LoadSpecialAssessments(doc)
+
+	//Check if we have a URL for the CARD page. If so Parse it for data
+	if len(_bcpa.LandCalculations.Cards) > 0 {
+		//Let's loop the cards if more then one
+
+		//Grab the URL
+		i := 0
+		for _, card := range _bcpa.LandCalculations.Cards {
+
+			//Grab the URL from the card
+			CardURL, error := url.QueryUnescape(card.CardURL)
+
+			if error != nil {
+				log.Fatal(error)
+			}
+
+			//Start parseing the page
+			error = ParseCardURL(CardURL, i)
+
+			//Increment
+			i++
+
+			if error != nil {
+				log.Fatal(error)
+			}
+
+		}
 	}
-
-	err = LoadLandCalculations(doc.Html())
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	//log.Println(len(_bcpa.PropertyAssessments))
-	//log.Println(_bcpa)
 
 	file, err := os.Create("C:\\gowork\\testFiles\\result.txt")
 	if err != nil {
@@ -275,12 +258,121 @@ func main() {
 
 	file.Write([]byte(marshalBcpa(_bcpa)))
 
-	//fmt.Fprintf(file, marshalBcpa(_bcpa))
+}
+func toJSON(m interface{}) string {
+	js, err := json.Marshal(m)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return strings.Replace(string(js), ",", ", ", -1)
+}
 
+//ParseCardURL Parse the data from the card URL
+func ParseCardURL(cardURL string, i int) error {
+
+	// Load the HTML document from the URL
+	doc, err := goquery.NewDocument(_baseURL + cardURL)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	q, errParseQuery := url.Parse(cardURL)
+	if err != nil {
+		log.Fatal(errParseQuery)
+	} else { //Since we can parse the URL lets set the values
+
+		//urlParams := q.Query() Pulling the tax year and folio
+		_bcpa.LandCalculations.Cards[i].Folio = q.Query()["folio"][0]
+		_bcpa.LandCalculations.Cards[i].TaxYear = q.Query()["taxyear"][0]
+
+	}
+
+	//Grab the various values
+	//Section 1
+	_bcpa.LandCalculations.Cards[i].ParcelIDNumber = SingleFindValue(doc, "#Table6 > tbody > tr:nth-child(2) > td:nth-child(1)")
+
+	//Section 2
+	_bcpa.LandCalculations.Cards[i].UseCode = SingleFindValue(doc, "#Table7 > tbody > tr:nth-child(2) > td > p:nth-child(2) > font")
+
+	//Section 3
+	_bcpa.LandCalculations.Cards[i].NoBedrooms = SingleFindValue(doc, "#Table1 > tbody > tr:nth-child(2) > td:nth-child(1) > p")
+	_bcpa.LandCalculations.Cards[i].NoBaths = SingleFindValue(doc, "#Table1 > tbody > tr:nth-child(2) > td:nth-child(2) > p")
+	_bcpa.LandCalculations.Cards[i].NoUnits = SingleFindValue(doc, "#Table1 > tbody > tr:nth-child(2) > td:nth-child(3) > p")
+	_bcpa.LandCalculations.Cards[i].NoStories = SingleFindValue(doc, "#Table1 > tbody > tr:nth-child(2) > td:nth-child(4) > p")
+	_bcpa.LandCalculations.Cards[i].NoBuildings = SingleFindValue(doc, "#Table1 > tbody > tr:nth-child(2) > td:nth-child(5) > p")
+
+	//Section 4
+	_bcpa.LandCalculations.Cards[i].Foundation = SingleFindValue(doc, "#Table2 > tbody > tr:nth-child(2) > td:nth-child(1) > p")
+	_bcpa.LandCalculations.Cards[i].Exterior = SingleFindValue(doc, "#Table2 > tbody > tr:nth-child(2) > td:nth-child(2) > p")
+	_bcpa.LandCalculations.Cards[i].RoofType = SingleFindValue(doc, "#Table2 > tbody > tr:nth-child(2) > td:nth-child(3) > p")
+	_bcpa.LandCalculations.Cards[i].RoofMaterial = SingleFindValue(doc, "#Table2 > tbody > tr:nth-child(2) > td:nth-child(4) > p")
+
+	//Section 5
+	_bcpa.LandCalculations.Cards[i].Interior = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(1) > p")
+	_bcpa.LandCalculations.Cards[i].Floors = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(2) > p")
+	_bcpa.LandCalculations.Cards[i].Plumbing = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(3) > p")
+	_bcpa.LandCalculations.Cards[i].Electric = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(4) > p")
+	_bcpa.LandCalculations.Cards[i].Classification = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(5) > p")
+
+	//fmt.Println(card.ParcelIDNumber)
+
+	return err
+}
+
+//SingleFindValue ...
+func SingleFindValue(doc *goquery.Document, exp string) string {
+	return strings.TrimSpace(StripSpaces(doc.Find(exp).Contents().Text()))
+}
+
+// ParseSpecialAssessmentRecord ...
+func ParseSpecialAssessmentRecord(s *goquery.Selection) SpecialAssessment {
+	sa := SpecialAssessment{}
+
+	s.Find("td").Each(func(int int, s *goquery.Selection) {
+
+		switch int {
+		case 0:
+			sa.Fire = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 1:
+			sa.Garb = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 2:
+			sa.Light = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 3:
+			sa.Drain = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 4:
+			sa.Impr = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 5:
+			sa.Safe = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 6:
+			sa.Storm = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 7:
+			sa.Clean = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 8:
+			sa.Misc = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		}
+
+	})
+
+	return sa
+}
+
+// LoadSpecialAssessments parse assessments table
+func LoadSpecialAssessments(doc *goquery.Document) {
+
+	//Lets loop the Table rows
+	doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(12) > tbody > tr").Each(func(i int, s *goquery.Selection) {
+		if i > 1 {
+
+			specialAssessment := ParseSpecialAssessmentRecord(s)
+			//append the sale to the struct
+			_bcpa.SpecialAssessments = append(_bcpa.SpecialAssessments, specialAssessment)
+		}
+	})
 }
 
 // ParseLandCalculationRecord ...
-func ParseLandCalculationRecord(s *goquery.Selection, rowCount int) LandCalculation {
+func ParseLandCalculationRecord(s *goquery.Selection) LandCalculation {
 	lc := LandCalculation{}
 
 	s.Find("td").Each(func(int int, s *goquery.Selection) {
@@ -300,13 +392,7 @@ func ParseLandCalculationRecord(s *goquery.Selection, rowCount int) LandCalculat
 }
 
 // LoadLandCalculations ...
-func LoadLandCalculations(html string, e error) error {
-
-	//Load the HTML
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Fatal(err)
-	}
+func LoadLandCalculations(doc *goquery.Document) {
 
 	//Parent node to be attached to BCPA
 	lcs := LandCalculations{}
@@ -317,10 +403,6 @@ func LoadLandCalculations(html string, e error) error {
 	//Need to know how many rows are in the table. We only need 3-* and the last 2 or 3 rows
 	rowCount := doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(10) > tbody > tr > td:nth-child(2) > table > tbody").Find("tr").Size()
 
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	//Last row of table
 	EffActYearBuiltRowIndex := rowCount - 1
 	//Unit row or Bldg SF row
@@ -328,14 +410,8 @@ func LoadLandCalculations(html string, e error) error {
 	//Bldg Row of table
 	BldgRowIndex := rowCount - 3
 
-	fmt.Println("Table Row Count: " + strconv.Itoa(rowCount))
-	fmt.Println("Last Row: " + strconv.Itoa(EffActYearBuiltRowIndex))
-	fmt.Println("Second Last Row: " + strconv.Itoa(UnitOrBldgRowIndex))
-	fmt.Println("If BLDG  Row: " + strconv.Itoa(BldgRowIndex))
 	//Lets loop the Table rows
 	doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(10) > tbody > tr > td:nth-child(2) > table > tbody > tr").Each(func(i int, s *goquery.Selection) {
-
-		fmt.Println("Table Row No: " + strconv.Itoa(i))
 
 		if i == EffActYearBuiltRowIndex { //Grab the last row of the table
 
@@ -364,8 +440,9 @@ func LoadLandCalculations(html string, e error) error {
 				if !hrefExists {
 					log.Println("No Sketch URL")
 				}
-
+				//Get the card URL
 				card.CardURL, hrefExists = s.Find("td:nth-child(1)").Find("a:nth-child(2)").Attr("href")
+				card.CardURL = url.QueryEscape(card.CardURL)
 
 				if !hrefExists {
 					log.Println("No Card URL")
@@ -376,8 +453,9 @@ func LoadLandCalculations(html string, e error) error {
 		} else if i > 1 { //These are the data rows as we skip the header rows
 			//Make sure we have data in the row before proceeding
 			if len(strings.TrimSpace(StripSpaces(s.Find("td:nth-child(1)").Find("span").First().Contents().Text()))) > 0 {
-
-				LandCalculation := ParseLandCalculationRecord(s, rowCount)
+				//Build the record
+				LandCalculation := ParseLandCalculationRecord(s)
+				//Append the Land Cal
 				lcs.Calculations = append(lcs.Calculations, LandCalculation)
 			}
 
@@ -390,8 +468,6 @@ func LoadLandCalculations(html string, e error) error {
 	}
 
 	_bcpa.LandCalculations = lcs
-
-	return err
 }
 
 // ParseSalesRecord Parse Sales hostory table
@@ -417,25 +493,19 @@ func ParseSalesRecord(s *goquery.Selection) Sale {
 }
 
 // LoadSalesHistory Load up the sales history table in objects and append to BCPA parent
-func LoadSalesHistory(html string, e error) error {
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Fatal(err)
-	}
-	//Preload the object
-	//sale := Sale{}
+func LoadSalesHistory(doc *goquery.Document) {
 
 	doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(10) > tbody > tr > td:nth-child(1) > table:nth-child(1) > tbody > tr").Each(func(i int, s *goquery.Selection) {
 
 		if i > 1 {
+			if len(strings.TrimSpace(StripSpaces(s.Find("td:nth-child(1)").Find("span").First().Contents().Text()))) > 0 {
 
-			sale := ParseSalesRecord(s)
-			_bcpa.SalesHistory = append(_bcpa.SalesHistory, sale)
+				sale := ParseSalesRecord(s)
+				//append the sale to the struct
+				_bcpa.SalesHistory = append(_bcpa.SalesHistory, sale)
+			}
 		}
 	})
-
-	return err
 }
 
 // ParseExemptionsTaxableRecord ...
@@ -443,14 +513,11 @@ func ParseExemptionsTaxableRecord(s *goquery.Selection, i int, eta ExemptionsTax
 
 	// Loop through each cell
 	s.Find("td").Each(func(int int, s *goquery.Selection) {
-		//fmt.Println(i)
-		//fmt.Println(strings.TrimSpace(s.Find("span").First().Contents().Text()))
 
 		switch i {
 		case 2:
 			switch int {
 			case 1:
-				//p.Land = strings.TrimSpace(s.Find("span").First().Contents().Text())
 				eta.County.JustValue = strings.TrimSpace(s.Find("span").First().Contents().Text())
 			case 2:
 				eta.SchoolBoard.JustValue = strings.TrimSpace(s.Find("span").First().Contents().Text())
@@ -555,12 +622,8 @@ func ParseExemptionsTaxableRecord(s *goquery.Selection, i int, eta ExemptionsTax
 }
 
 // LoadAppendExemptionsTaxable ...
-func LoadAppendExemptionsTaxable(html string, e error) error {
+func LoadAppendExemptionsTaxable(doc *goquery.Document) {
 
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Fatal(err)
-	}
 	//Preload the object
 	eta := ExemptionsTaxableValuesbyTaxingAuthority{}
 	eta.CreatedAt = time.Now()
@@ -572,25 +635,41 @@ func LoadAppendExemptionsTaxable(html string, e error) error {
 	doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(8) > tbody > tr").Each(func(i int, s *goquery.Selection) {
 
 		if i > 1 {
-
 			eta = ParseExemptionsTaxableRecord(s, i, eta)
-			//fmt.Println(eta)
-
 		}
 	})
 
 	_bcpa.ExemptionsTaxable = eta
+}
 
-	return err
+// ParseRecord PropertyAssessments  table contains the information for each user
+func ParseRecord(s *goquery.Selection) PropertyAssessmentValue {
+	p := PropertyAssessmentValue{}
+
+	// Loop through each cell
+	s.Find("td").Each(func(int int, s *goquery.Selection) {
+
+		switch int {
+		case 0:
+			p.Year = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 1:
+			p.Land = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 2:
+			p.BuildingImprovement = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 3:
+			p.JustMarketValue = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 4:
+			p.AssessedSOHValue = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 5:
+			p.Tax = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		}
+	})
+
+	return p
 }
 
 //LoadAppendPropertyAssessments used to load and append Assessments to the BCPA parent node
-func LoadAppendPropertyAssessments(html string, e error) error {
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Fatal(err)
-	}
+func LoadAppendPropertyAssessments(doc *goquery.Document) {
 
 	doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(6) > tbody > tr").Each(func(i int, s *goquery.Selection) {
 
@@ -601,19 +680,13 @@ func LoadAppendPropertyAssessments(html string, e error) error {
 		}
 	})
 
-	return err
 }
 
 //LoadBcpaFromDoc used to load Bcpa data from HTML
-func LoadBcpaFromDoc(html string, e error) (Bcpa, error) {
+func LoadBcpaFromDoc(doc *goquery.Document) Bcpa {
 
 	var bcpa Bcpa
 	var siteAddress, owner, mailingAddress, id, mileage, use, legal string
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	// use selector found with the browser inspector
 	siteAddress = doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(2) > tbody > tr > td:nth-child(1) > table > tbody > tr:nth-child(1) > td:nth-child(2) > span > a > b").Contents().Text()
@@ -621,15 +694,9 @@ func LoadBcpaFromDoc(html string, e error) (Bcpa, error) {
 	//clean up the carriage return
 	re := regexp.MustCompile(`\r?\n`)
 	siteAddress = re.ReplaceAllString(siteAddress, " ")
-	//siteAddress = strings.Replace(siteAddress, " 			  ", " ", 1)
-
-	releadclosewhtsp := regexp.MustCompile(`^[\s\p{Zs}]+|[\s\p{Zs}]+$`)
-	reinsidewhtsp := regexp.MustCompile(`[\s\p{Zs}]{2,}`)
-	final := releadclosewhtsp.ReplaceAllString(siteAddress, "")
-	siteAddress = reinsidewhtsp.ReplaceAllString(final, " ")
 
 	//Set the Object
-	bcpa.Siteaddress = strings.TrimSpace(siteAddress)
+	bcpa.Siteaddress = strings.TrimSpace(StripSpaces(siteAddress))
 
 	owner = doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(2) > tbody > tr > td:nth-child(1) > table > tbody > tr:nth-child(2) > td:nth-child(2) > span").Contents().Text()
 	//Set the Object
@@ -660,7 +727,7 @@ func LoadBcpaFromDoc(html string, e error) (Bcpa, error) {
 	//Set the Object
 	bcpa.Legal = strings.TrimSpace(legal)
 
-	return bcpa, err
+	return bcpa
 }
 
 //StripSpaces remove leading and trailing and extra gapped spaces
@@ -675,6 +742,7 @@ func StripSpaces(o string) string {
 	return reinsidewhtsp2.ReplaceAllString(final, " ")
 }
 
+// marshalBcpa Convert BCPA	to string
 func marshalBcpa(bcpa Bcpa) string {
 	//user := &User{name:"Frank"}
 	b, err := json.Marshal(bcpa)
