@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +38,8 @@ type Bcpa struct {
 
 // RecBuildingCard
 type RecBuildingCard struct {
+	CardURL                   string `json:"cardurl"`
+	TaxYear                   string `json:"taxyear"`
 	ParcelIDNumber            string `json:"parcelidnumber"`
 	UseCode                   string `json:"usecode"`
 	NoBedrooms                string `json:"nobedrooms"`
@@ -80,8 +83,8 @@ type LandCalculations struct {
 	Calculations    []LandCalculation
 	AdjBldgSF       string `json:"adjbldgsf"`
 	Units           string `json:"units"`
-	Card            RecBuildingCard
-	SketchURL       string `json:"units"`
+	Cards           []RecBuildingCard
+	SketchURL       string `json:"sketchurl"`
 	EffActYearBuilt string `json:"effactyearbuilt"`
 }
 
@@ -160,7 +163,7 @@ type PropertyAssessmentValue struct {
 	UpdatedAt           time.Time `json:"updatedat"`
 }
 
-//Sale
+// Sale property sales
 type Sale struct {
 	Date        string `json:"date"`
 	Type        string `json:"type"`
@@ -255,6 +258,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	err = LoadLandCalculations(doc.Html())
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	//log.Println(len(_bcpa.PropertyAssessments))
 	//log.Println(_bcpa)
 
@@ -268,6 +277,121 @@ func main() {
 
 	//fmt.Fprintf(file, marshalBcpa(_bcpa))
 
+}
+
+// ParseLandCalculationRecord ...
+func ParseLandCalculationRecord(s *goquery.Selection, rowCount int) LandCalculation {
+	lc := LandCalculation{}
+
+	s.Find("td").Each(func(int int, s *goquery.Selection) {
+
+		switch int {
+		case 0:
+			lc.Price = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 1:
+			lc.Factor = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		case 2:
+			lc.Type = strings.TrimSpace(s.Find("span").First().Contents().Text())
+		}
+
+	})
+
+	return lc
+}
+
+// LoadLandCalculations ...
+func LoadLandCalculations(html string, e error) error {
+
+	//Load the HTML
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	//Parent node to be attached to BCPA
+	lcs := LandCalculations{}
+
+	//We need a Card placeholder as we'll need to set the URL for use later
+	card := RecBuildingCard{}
+
+	//Need to know how many rows are in the table. We only need 3-* and the last 2 or 3 rows
+	rowCount := doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(10) > tbody > tr > td:nth-child(2) > table > tbody").Find("tr").Size()
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	//Last row of table
+	EffActYearBuiltRowIndex := rowCount - 1
+	//Unit row or Bldg SF row
+	UnitOrBldgRowIndex := rowCount - 2
+	//Bldg Row of table
+	BldgRowIndex := rowCount - 3
+
+	fmt.Println("Table Row Count: " + strconv.Itoa(rowCount))
+	fmt.Println("Last Row: " + strconv.Itoa(EffActYearBuiltRowIndex))
+	fmt.Println("Second Last Row: " + strconv.Itoa(UnitOrBldgRowIndex))
+	fmt.Println("If BLDG  Row: " + strconv.Itoa(BldgRowIndex))
+	//Lets loop the Table rows
+	doc.Find("body > table:nth-child(3) > tbody > tr > td > table > tbody > tr:nth-child(1) > td:nth-child(1) > table:nth-child(10) > tbody > tr > td:nth-child(2) > table > tbody > tr").Each(func(i int, s *goquery.Selection) {
+
+		fmt.Println("Table Row No: " + strconv.Itoa(i))
+
+		if i == EffActYearBuiltRowIndex { //Grab the last row of the table
+
+			lcs.EffActYearBuilt = strings.TrimSpace(StripSpaces(s.Find("td").First().Find("a").First().Find("span").First().Contents().Text()))
+
+		} else if i == UnitOrBldgRowIndex || i == BldgRowIndex { //Grab the second to last row and check if we have Unit data or not
+
+			//Check the value of the first td
+			if strings.Contains(s.Find("td:nth-child(1)").Find("span").Contents().Text(), "Units") { //This is the unit row so grab the unit data
+
+				lcs.Units = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(2)").Find("span").Contents().Text()))
+
+			} else { //This is the Bldg Row, Grab the building data
+
+				//Defualt value for Units
+				lcs.Units = "0"
+
+				//Set the SF total
+				lcs.AdjBldgSF = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(2)").Find("span").Contents().Text()))
+
+				var hrefExists bool
+
+				//Grab the Sketch URL
+				lcs.SketchURL, hrefExists = s.Find("td:nth-child(1)").Find("a:nth-child(3)").Attr("href")
+
+				if !hrefExists {
+					log.Println("No Sketch URL")
+				}
+
+				card.CardURL, hrefExists = s.Find("td:nth-child(1)").Find("a:nth-child(2)").Attr("href")
+
+				if !hrefExists {
+					log.Println("No Card URL")
+				}
+
+			}
+
+		} else if i > 1 { //These are the data rows as we skip the header rows
+			//Make sure we have data in the row before proceeding
+			if len(strings.TrimSpace(StripSpaces(s.Find("td:nth-child(1)").Find("span").First().Contents().Text()))) > 0 {
+
+				LandCalculation := ParseLandCalculationRecord(s, rowCount)
+				lcs.Calculations = append(lcs.Calculations, LandCalculation)
+			}
+
+		}
+	})
+
+	//Add the card info if the URL isn't blank
+	if card.CardURL != "" {
+		lcs.Cards = append(lcs.Cards, card)
+	}
+
+	_bcpa.LandCalculations = lcs
+
+	return err
 }
 
 // ParseSalesRecord Parse Sales hostory table
