@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -181,13 +182,26 @@ func main() {
 	}
 
 	// Log in to the site.
+
 	fm, _ := bow.Form("[name='homeind']")
-	fm.Input("Situs_Street_Number", "515")
-	fm.SelectByOptionValue("Situs_Street_Direction", "SW")
-	fm.Input("Situs_Street_Name", "18")
-	fm.SelectByOptionValue("Situs_Street_Type", "AVE")
+
+	//515 SW 18 AVE
+	// fm.Input("Situs_Street_Number", "515")
+	// fm.SelectByOptionValue("Situs_Street_Direction", "SW")
+	// fm.Input("Situs_Street_Name", "18")
+	// fm.SelectByOptionValue("Situs_Street_Type", "AVE")
+	// fm.Input("Situs_Street_Post_Dir", "")
+	// fm.Input("Situs_Unit_Number", "15")
+	// fm.SelectByOptionValue("Situs_City", "FL")
+
+	//501 NE 5th Terrace
+
+	fm.Input("Situs_Street_Number", "501")
+	fm.SelectByOptionValue("Situs_Street_Direction", "NE")
+	fm.Input("Situs_Street_Name", "5")
+	fm.SelectByOptionValue("Situs_Street_Type", "TER")
 	fm.Input("Situs_Street_Post_Dir", "")
-	fm.Input("Situs_Unit_Number", "15")
+	fm.Input("Situs_Unit_Number", "")
 	fm.SelectByOptionValue("Situs_City", "FL")
 
 	if fm.Submit() != nil {
@@ -315,9 +329,73 @@ func ParseCardURL(cardURL string, i int) error {
 	_bcpa.LandCalculations.Cards[i].Electric = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(4) > p")
 	_bcpa.LandCalculations.Cards[i].Classification = SingleFindValue(doc, "#Table3 > tbody > tr:nth-child(2) > td:nth-child(5) > p")
 
+	//Section 6
+	_bcpa.LandCalculations.Cards[i].CeilingHeights = SingleFindValue(doc, "#Table4 > tbody > tr:nth-child(2) > td:nth-child(1) > p")
+	_bcpa.LandCalculations.Cards[i].QualityOfConstruction = SingleFindValue(doc, "#Table4 > tbody > tr:nth-child(2) > td:nth-child(2) > p")
+	_bcpa.LandCalculations.Cards[i].CurrentConditionStructure = SingleFindValue(doc, "#Table4 > tbody > tr:nth-child(2) > td:nth-child(3) > p")
+	_bcpa.LandCalculations.Cards[i].ConstructionClass = SingleFindValue(doc, "#Table4 > tbody > tr:nth-child(2) > td:nth-child(4) > p")
+
 	//fmt.Println(card.ParcelIDNumber)
 
+	//Make sure we have the table
+	if doc.Find("#Table8 > tbody:nth-child(1) > tr").Size() > 0 {
+		fmt.Println("We Have Features")
+
+		LoopCardFeatureTable(doc, i)
+
+	} else {
+		fmt.Println("We DONT Have Features: " + strconv.Itoa(doc.Find("#Table8 > tbody:nth-child(1) > tr").Size()))
+	}
+	
+	//Make sure we have permits
+	if len(doc.Find("#Table5 > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)").Find("p").Contents().Text()) > 2 {
+		fmt.Println("Permits: " + strconv.Itoa(len(doc.Find("#Table5 > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)").Find("p").Contents().Text())))
+		fmt.Println("Permit 1 Val: " + doc.Find("#Table5 > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)").Find("p").Contents().Text())
+
+		LoadCardPermits(doc, i)
+
+	} else {
+		fmt.Println("We DONT Have Permits: " + strconv.Itoa(doc.Find("#Table5 > tbody:nth-child(1) > tr").Size()))
+	}
+
+
+
 	return err
+}
+
+// LoopCardFeatureTable parse the Features table if it exists and return a record set
+func LoopCardFeatureTable(doc *goquery.Document, i int) {
+	//Lets loop the Table rows
+
+	doc.Find("#Table8 > tbody:nth-child(1) > tr").Each(func(tr int, s *goquery.Selection) {
+		if tr > 1 {
+
+			extraFeature := ExtraFeature{Feature: strings.TrimSpace(StripSpaces(s.Find("td > p").Contents().Text()))}
+
+			//append to the struct
+			_bcpa.LandCalculations.Cards[i].ExtraFeatures = append(_bcpa.LandCalculations.Cards[i].ExtraFeatures, extraFeature)
+		}
+	})
+}
+
+// LoadCardPermits load the permits from the cards page
+func LoadCardPermits(doc *goquery.Document, i int) {
+
+	permit := Permit{}
+
+	doc.Find("#Table5 > tbody > tr").Each(func(tr int, s *goquery.Selection) {
+
+		if tr > 1 {
+
+			permit.PermitNo = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(1)").Find("p").Contents().Text()))
+			permit.PermitType = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(2)").Find("p").Contents().Text()))
+			permit.EstCost = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(3)").Find("p").Contents().Text()))
+			permit.PermitDate = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(4)").Find("p").Contents().Text()))
+			permit.CODate = strings.TrimSpace(StripSpaces(s.Find("td:nth-child(5)").Find("p").Contents().Text()))
+			//append the permit to the struct
+			_bcpa.LandCalculations.Cards[i].Permits = append(_bcpa.LandCalculations.Cards[i].Permits, permit)
+		}
+	})
 }
 
 //SingleFindValue ...
