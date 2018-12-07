@@ -346,7 +346,7 @@ func ParseCardURL(cardURL string, i int) error {
 	} else {
 		fmt.Println("We DONT Have Features: " + strconv.Itoa(doc.Find("#Table8 > tbody:nth-child(1) > tr").Size()))
 	}
-	
+
 	//Make sure we have permits
 	if len(doc.Find("#Table5 > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)").Find("p").Contents().Text()) > 2 {
 		fmt.Println("Permits: " + strconv.Itoa(len(doc.Find("#Table5 > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)").Find("p").Contents().Text())))
@@ -357,8 +357,6 @@ func ParseCardURL(cardURL string, i int) error {
 	} else {
 		fmt.Println("We DONT Have Permits: " + strconv.Itoa(doc.Find("#Table5 > tbody:nth-child(1) > tr").Size()))
 	}
-
-
 
 	return err
 }
